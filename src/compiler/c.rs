@@ -378,6 +378,14 @@ where
     ) -> Result<HashResult<T>> {
         let start_of_compilation = std::time::SystemTime::now();
 
+        // Merge server basedirs with per-client SCCACHE_BASEDIRS from env_vars
+        let effective_basedirs = merge_client_basedirs(storage.basedirs(), &env_vars);
+        let basedirs: &[Vec<u8>] = if effective_basedirs.is_empty() {
+            storage.basedirs()
+        } else {
+            &effective_basedirs
+        };
+
         let extra_hashes = hash_all(&self.parsed_args.extra_hash_files, &pool.clone()).await?;
         // Create an argument vector containing both preprocessor and arch args, to
         // use in creating a hash key
@@ -453,7 +461,7 @@ where
                 &absolute_input_path,
                 self.compiler.plusplus(),
                 preprocessor_cache_mode_config,
-                storage.basedirs(),
+                basedirs,
             )?
         } else {
             None
@@ -470,8 +478,11 @@ where
                         seekable.read_to_end(&mut buf)?;
                         let mut preprocessor_cache_entry = PreprocessorCacheEntry::read(&buf)?;
                         let mut updated = false;
-                        let hit = preprocessor_cache_entry
-                            .lookup_result_digest(preprocessor_cache_mode_config, &mut updated);
+                        let hit = preprocessor_cache_entry.lookup_result_digest(
+                            preprocessor_cache_mode_config,
+                            &mut updated,
+                            basedirs,
+                        );
 
                         let mut update_failed = false;
                         if updated {
@@ -634,7 +645,7 @@ where
         .with_extra_hashes(&extra_hashes)
         .with_env_vars(&env_vars)
         .with_plusplus(self.compiler.plusplus())
-        .with_basedirs(storage.basedirs())
+        .with_basedirs(basedirs)
         .compute();
 
         // Cache the preprocessing step
@@ -646,7 +657,7 @@ where
                     .map(|(path, digest)| (digest, path))
                     .collect();
                 files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-                preprocessor_cache_entry.add_result(start_of_compilation, &key, files);
+                preprocessor_cache_entry.add_result(start_of_compilation, &key, files, basedirs);
 
                 if let Err(e) = storage
                     .put_preprocessor_cache_entry(&preprocessor_key, preprocessor_cache_entry)
@@ -948,6 +959,59 @@ fn process_preprocessor_line(
     // Everything of interest between hash_start and start has been hashed now.
     hash_start = start;
     Ok(ControlFlow::Continue((start, hash_start)))
+}
+
+/// Extract SCCACHE_BASEDIRS from client env_vars, caring about absolute path only and
+/// merge them with server_basedirs
+fn merge_client_basedirs(
+    server_basedirs: &[Vec<u8>],
+    env_vars: &[(OsString, OsString)],
+) -> Vec<Vec<u8>> {
+    let client_basedirs_val = env_vars
+        .iter()
+        .find(|(k, _)| k == "SCCACHE_BASEDIRS")
+        .map(|(_, v)| v);
+
+    let Some(val) = client_basedirs_val else {
+        return Vec::new();
+    };
+
+    // Acquire the long env var SCCACHE_BASEDIRS string
+    let val_str = match val.to_str() {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    let mut seen: HashSet<Vec<u8>> = HashSet::from_iter(server_basedirs.iter().cloned());
+
+    #[cfg(windows)]
+    let split_symbol = ';';
+    #[cfg(not(windows))]
+    let split_symbol = ':';
+    for dir in val_str.split(split_symbol) {
+        // skip if dir is empty
+        if dir.is_empty() {
+            continue;
+        }
+        let path = normalize_path(Path::new(dir));
+
+        // skip if dir is relative
+        if !path.is_absolute() {
+            continue;
+        }
+        let mut bytes = path.to_string_lossy().into_owned().into_bytes();
+
+        // make sure the dir path ends with /
+        if !bytes.ends_with(b"/") {
+            bytes.push(b'/');
+        }
+        seen.insert(bytes);
+    }
+
+    let mut merged: Vec<Vec<u8>> = seen.into_iter().collect();
+    // longest comes first so it can get matched first
+    merged.sort_by(|a, b| b.len().cmp(&a.len()));
+    merged
 }
 
 /// Copied from cargo.
@@ -1566,7 +1630,10 @@ impl<'a> HashKeyParams<'a> {
         m.update(CACHE_VERSION);
         m.update(self.language.as_str().as_bytes());
         for arg in self.arguments {
-            arg.hash(&mut HashToDigest { digest: &mut m });
+            let arg_bytes = arg.as_encoded_bytes();
+            let stripped = strip_basedirs(arg_bytes, self.basedirs);
+            m.update(&stripped);
+            m.update(&[0u8]);
         }
         for hash in self.extra_hashes {
             m.update(hash.as_bytes());

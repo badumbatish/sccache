@@ -94,6 +94,7 @@ impl PreprocessorCacheEntry {
         compilation_time_start: SystemTime,
         result_key: &str,
         included_files: impl IntoIterator<Item = (String, PathBuf)>,
+        basedirs: &[Vec<u8>],
     ) {
         if self.results.len() > MAX_PREPROCESSOR_CACHE_ENTRIES {
             // Normally, there shouldn't be many result entries in the
@@ -130,8 +131,10 @@ impl PreprocessorCacheEntry {
                     }
                     _ => false,
                 };
+                let stored_path = strip_basedirs_from_path(&path, basedirs)
+                    .unwrap_or_else(|| path.into_os_string());
                 Ok(IncludeEntry {
-                    path: path.into_os_string(),
+                    path: stored_path,
                     digest,
                     file_size: meta.len(),
                     mtime: if should_cache_time { mtime } else { None },
@@ -178,10 +181,11 @@ impl PreprocessorCacheEntry {
         &mut self,
         config: PreprocessorCacheModeConfig,
         updated: &mut bool,
+        basedirs: &[Vec<u8>],
     ) -> Option<String> {
         // Check newest result first since it's more likely to match.
         for (digest, includes) in self.results.iter_mut().rev() {
-            let result_matches = Self::result_matches(digest, includes, config, updated);
+            let result_matches = Self::result_matches(digest, includes, config, updated, basedirs);
             if result_matches {
                 return Some(digest.clone());
             }
@@ -195,21 +199,21 @@ impl PreprocessorCacheEntry {
         includes: &mut [IncludeEntry],
         config: PreprocessorCacheModeConfig,
         updated: &mut bool,
+        basedirs: &[Vec<u8>],
     ) -> bool {
         for include in includes {
-            let path = Path::new(include.path.as_os_str());
-            let meta = match std::fs::symlink_metadata(path) {
-                Ok(meta) => {
+            let (path, cached_meta) = reconstruct_path(include.path.as_os_str(), basedirs);
+            let meta = match cached_meta {
+                Some(meta) => {
                     if meta.len() != include.file_size {
                         return false;
                     }
                     meta
                 }
-                Err(e) => {
+                None => {
                     debug!(
-                        "{} is in a preprocessor cache entry but can't be read ({})",
+                        "{} is in a preprocessor cache entry but can't be read",
                         path.display(),
-                        e
                     );
                     return false;
                 }
@@ -240,7 +244,7 @@ impl PreprocessorCacheEntry {
                 }
             }
 
-            let file = match std::fs::File::open(path) {
+            let file = match std::fs::File::open(&path) {
                 Ok(file) => file,
                 Err(e) => {
                     debug!(
@@ -316,7 +320,7 @@ impl PreprocessorCacheEntry {
 
                 if finder.found_timestamp() {
                     debug!("found __TIMESTAMP__ in {}", path.display());
-                    let meta = match std::fs::symlink_metadata(path) {
+                    let meta = match std::fs::symlink_metadata(&path) {
                         Ok(meta) => meta,
                         Err(e) => {
                             debug!(
@@ -392,7 +396,10 @@ pub fn preprocessor_cache_entry_hash_key(
     m.update(&[FORMAT_VERSION]);
     m.update(language.as_str().as_bytes());
     for arg in arguments {
-        arg.hash(&mut HashToDigest { digest: &mut m });
+        let arg_bytes = arg.as_encoded_bytes();
+        let stripped = strip_basedirs(arg_bytes, basedirs);
+        m.update(&stripped);
+        m.update(&[0u8]);
     }
     for hash in extra_hashes {
         m.update(hash.as_bytes());
@@ -485,6 +492,46 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// Strip basedir prefixes from a single compiler argument.
+///
+/// Strip a basedir prefix from a compiler argument.
+/// Strip basedir prefixes from an include file path and return the stripped path.
+/// Returns `None` if no basedir matched.
+pub fn strip_basedirs_from_path(path: &Path, basedirs: &[Vec<u8>]) -> Option<OsString> {
+    if basedirs.is_empty() {
+        return None;
+    }
+    let path_str = path.to_str()?;
+    for basedir in basedirs {
+        if path_str.as_bytes().starts_with(basedir) {
+            return Some(OsString::from(&path_str[basedir.len()..]));
+        }
+    }
+    None
+}
+
+/// Reconstruct an absolute path from a stored (potentially stripped) path
+/// by prepending each basedir until a valid file is found.
+/// Returns both the path and its metadata to avoid a redundant stat in the caller.
+pub fn reconstruct_path(
+    stored_path: &OsStr,
+    basedirs: &[Vec<u8>],
+) -> (PathBuf, Option<std::fs::Metadata>) {
+    let path = Path::new(stored_path);
+    if path.is_absolute() {
+        let meta = std::fs::symlink_metadata(path).ok();
+        return (path.to_path_buf(), meta);
+    }
+    for basedir in basedirs {
+        let basedir_str = std::str::from_utf8(basedir).expect("basedirs are valid UTF-8");
+        let candidate = Path::new(basedir_str).join(path);
+        if let Ok(meta) = std::fs::symlink_metadata(&candidate) {
+            return (candidate, Some(meta));
+        }
+    }
+    (path.to_path_buf(), None)
+}
 
 #[cfg(test)]
 mod test {

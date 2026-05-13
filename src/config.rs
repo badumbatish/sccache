@@ -1270,9 +1270,11 @@ impl Config {
             let p_norm = p.normalize();
             let mut bytes = p_norm.to_string().into_bytes();
 
-            // Always add a trailing `/` to basedirs to ensure we only match complete path
-            // components
-            bytes.push(b'/');
+            // Add a trailing `/` to basedirs to ensure we only match complete path
+            // components, but only if it doesn't already end with one (e.g. root "/")
+            if !bytes.ends_with(b"/") {
+                bytes.push(b'/');
+            }
 
             // normalize windows paths: use slashes and lowercase
             let normalized = {
