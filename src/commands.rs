@@ -808,7 +808,9 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 
             let jobserver = Client::new();
             let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
-            let mut runtime = Runtime::new()?;
+            let mut runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
             let res = do_compile(
                 ProcessCommandCreator::new(&jobserver),
                 &mut runtime,
