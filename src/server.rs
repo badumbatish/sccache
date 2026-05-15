@@ -1639,6 +1639,9 @@ pub struct ServerInfo {
     pub cache_size: Option<u64>,
     pub max_cache_size: Option<u64>,
     pub use_preprocessor_cache_mode: bool,
+    pub pp_file_stat_matches: bool,
+    pub pp_skip_system_headers: bool,
+    pub pp_hash_working_directory: bool,
     pub version: String,
     pub basedirs: Vec<String>,
 }
@@ -1948,11 +1951,16 @@ impl ServerInfo {
         let max_cache_size;
         let basedirs;
         let multi_level;
+        let pp_file_stat_matches;
+        let pp_skip_system_headers;
+        let pp_hash_working_directory;
         if let Some(storage) = storage {
             cache_location = storage.location();
-            use_preprocessor_cache_mode = storage
-                .preprocessor_cache_mode_config()
-                .use_preprocessor_cache_mode;
+            let pp_config = storage.preprocessor_cache_mode_config();
+            use_preprocessor_cache_mode = pp_config.use_preprocessor_cache_mode;
+            pp_file_stat_matches = pp_config.file_stat_matches;
+            pp_skip_system_headers = pp_config.skip_system_headers;
+            pp_hash_working_directory = pp_config.hash_working_directory;
             (cache_size, max_cache_size) =
                 futures::try_join!(storage.current_size(), storage.max_size())?;
             basedirs = storage
@@ -1964,6 +1972,9 @@ impl ServerInfo {
         } else {
             cache_location = String::new();
             use_preprocessor_cache_mode = false;
+            pp_file_stat_matches = false;
+            pp_skip_system_headers = false;
+            pp_hash_working_directory = true;
             cache_size = None;
             max_cache_size = None;
             basedirs = Vec::new();
@@ -1979,6 +1990,9 @@ impl ServerInfo {
             cache_size,
             max_cache_size,
             use_preprocessor_cache_mode,
+            pp_file_stat_matches,
+            pp_skip_system_headers,
+            pp_hash_working_directory,
             version,
             basedirs,
         })
@@ -2024,6 +2038,26 @@ impl ServerInfo {
                 },
                 name_width = name_width
             );
+            if self.use_preprocessor_cache_mode {
+                println!(
+                    "{:<name_width$} {}",
+                    "  file_stat_matches",
+                    self.pp_file_stat_matches,
+                    name_width = name_width
+                );
+                println!(
+                    "{:<name_width$} {}",
+                    "  skip_system_headers",
+                    self.pp_skip_system_headers,
+                    name_width = name_width
+                );
+                println!(
+                    "{:<name_width$} {}",
+                    "  hash_working_directory",
+                    self.pp_hash_working_directory,
+                    name_width = name_width
+                );
+            }
         }
         println!(
             "{:<name_width$} {}",
