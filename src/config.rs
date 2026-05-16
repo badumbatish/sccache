@@ -612,8 +612,23 @@ impl CacheConfigs {
         if azure.is_some() {
             self.azure = azure;
         }
-        if disk.is_some() {
-            self.disk = disk;
+        if let Some(other_disk) = disk {
+            match &mut self.disk {
+                Some(self_disk) => {
+                    self_disk.dir = other_disk.dir;
+                    self_disk.size = other_disk.size;
+                    self_disk.rw_mode = other_disk.rw_mode;
+                    // Only override preprocessor_cache_mode if the env config
+                    // explicitly changed it (i.e., it differs from the default
+                    // activated() value that env uses when not overridden).
+                    if other_disk.preprocessor_cache_mode
+                        != PreprocessorCacheModeConfig::activated()
+                    {
+                        self_disk.preprocessor_cache_mode = other_disk.preprocessor_cache_mode;
+                    }
+                }
+                None => self.disk = Some(other_disk),
+            }
         }
         if gcs.is_some() {
             self.gcs = gcs;
