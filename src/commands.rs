@@ -108,7 +108,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
         .current_dir(workdir)
         .env("SCCACHE_START_SERVER", "1")
         .env("SCCACHE_STARTUP_NOTIFY", &socket_path)
-        .env("RUST_BACKTRACE", "1")
+        .env("RUST_BACKTRACE", "0")
         .spawn()?;
 
     let startup = async move {
@@ -207,7 +207,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
                 OsString::from("SCCACHE_STARTUP_NOTIFY"),
                 OsString::from(&pipe_name),
             ),
-            (OsString::from("RUST_BACKTRACE"), OsString::from("1")),
+            (OsString::from("RUST_BACKTRACE"), OsString::from("0")),
         ];
         for (key, val) in env::vars_os().chain(extra_vars) {
             v.extend(
