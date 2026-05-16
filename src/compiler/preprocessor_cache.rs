@@ -121,7 +121,7 @@ impl PreprocessorCacheEntry {
         let includes: Result<Vec<_>, std::io::Error> = included_files
             .into_iter()
             .map(|(digest, path)| {
-                let meta = std::fs::symlink_metadata(&path)?;
+                let meta = std::fs::metadata(&path)?;
                 let mtime: Option<Timestamp> = meta.modified().ok().map(|t| t.into());
                 let ctime = meta.ctime_or_creation().ok();
 
@@ -320,7 +320,7 @@ impl PreprocessorCacheEntry {
 
                 if finder.found_timestamp() {
                     debug!("found __TIMESTAMP__ in {}", path.display());
-                    let meta = match std::fs::symlink_metadata(&path) {
+                    let meta = match std::fs::metadata(&path) {
                         Ok(meta) => meta,
                         Err(e) => {
                             debug!(
@@ -514,19 +514,22 @@ pub fn strip_basedirs_from_path(path: &Path, basedirs: &[Vec<u8>]) -> Option<OsS
 /// Reconstruct an absolute path from a stored (potentially stripped) path
 /// by prepending each basedir until a valid file is found.
 /// Returns both the path and its metadata to avoid a redundant stat in the caller.
+// TODO: cache the successful basedir index across calls within the same
+// PP entry — all includes share the same sandbox prefix, so after the first
+// hit we can skip trying other basedirs for the remaining ~200 includes.
 pub fn reconstruct_path(
     stored_path: &OsStr,
     basedirs: &[Vec<u8>],
 ) -> (PathBuf, Option<std::fs::Metadata>) {
     let path = Path::new(stored_path);
     if path.is_absolute() {
-        let meta = std::fs::symlink_metadata(path).ok();
+        let meta = std::fs::metadata(path).ok();
         return (path.to_path_buf(), meta);
     }
     for basedir in basedirs {
         let basedir_str = std::str::from_utf8(basedir).expect("basedirs are valid UTF-8");
         let candidate = Path::new(basedir_str).join(path);
-        if let Ok(meta) = std::fs::symlink_metadata(&candidate) {
+        if let Ok(meta) = std::fs::metadata(&candidate) {
             return (candidate, Some(meta));
         }
     }
