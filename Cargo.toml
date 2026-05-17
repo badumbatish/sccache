@@ -40,6 +40,7 @@ strip = true
 
 [dependencies]
 anyhow = { version = "1.0"}
+mimalloc = { version = "0.1", features = ["override"] }
 ar = "0.9"
 async-trait = "0.1"
 backon = { version = "1", default-features = false, features = [
