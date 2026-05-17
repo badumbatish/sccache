@@ -37,6 +37,7 @@ debug = false # save disk space
 codegen-units = 1
 lto = true
 strip = true
+panic = "abort"
 
 [dependencies]
 anyhow = { version = "1.0"}

@@ -19,12 +19,13 @@
 //! different.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     ffi::{OsStr, OsString},
     hash::Hash,
     io::Write,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::LazyLock,
+    sync::{LazyLock, RwLock},
     time::SystemTime,
 };
 
@@ -44,6 +45,12 @@ use super::Language;
 const FORMAT_VERSION: u8 = 0;
 const MAX_PREPROCESSOR_CACHE_ENTRIES: usize = 100;
 const MAX_PREPROCESSOR_CACHE_FILE_INFO_ENTRIES: usize = 10000;
+
+/// In-memory cache of file content digests, keyed by (device, inode, size, mtime_secs, mtime_nsecs).
+/// Avoids re-reading and re-hashing the same file across multiple PP cache validations.
+/// Uses RwLock so concurrent reads (cache hits) don't block each other.
+static DIGEST_CACHE: LazyLock<RwLock<HashMap<(u64, u64, u64, i64, u32), String>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 #[derive(Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
 pub struct PreprocessorCacheEntry {
@@ -244,6 +251,22 @@ impl PreprocessorCacheEntry {
                 }
             }
 
+            // Check in-memory digest cache before reading the file.
+            let cache_key = (
+                meta.dev(),
+                meta.ino(),
+                meta.len(),
+                meta.mtime(),
+                meta.mtime_nsec() as u32,
+            );
+            if let Some(cached_digest) = DIGEST_CACHE.read().unwrap().get(&cache_key) {
+                if include.digest == *cached_digest {
+                    continue;
+                } else {
+                    return false;
+                }
+            }
+
             let file = match std::fs::File::open(&path) {
                 Ok(file) => file,
                 Err(e) => {
@@ -258,7 +281,16 @@ impl PreprocessorCacheEntry {
 
             if config.ignore_time_macros {
                 match Digest::reader_sync(file) {
-                    Ok(new_digest) => return include.digest == new_digest,
+                    Ok(new_digest) => {
+                        DIGEST_CACHE
+                            .write()
+                            .unwrap()
+                            .insert(cache_key, new_digest.clone());
+                        if include.digest != new_digest {
+                            return false;
+                        }
+                        continue;
+                    }
                     Err(e) => {
                         debug!(
                             "{} is in a preprocessor cache entry but can't be read ({})",
@@ -281,8 +313,15 @@ impl PreprocessorCacheEntry {
                         return false;
                     }
                 };
-                if !finder.found_time_macros() && include.digest != new_digest {
-                    return false;
+                if !finder.found_time_macros() {
+                    DIGEST_CACHE
+                        .write()
+                        .unwrap()
+                        .insert(cache_key, new_digest.clone());
+                    if include.digest != new_digest {
+                        return false;
+                    }
+                    continue;
                 }
                 if finder.found_time() {
                     // We don't know for sure that the program actually uses the __TIME__ macro,
