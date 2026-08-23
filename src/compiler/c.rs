@@ -973,15 +973,13 @@ pub fn normalize_path(path: &Path) -> PathBuf {
                 ret.push(component.as_os_str());
             }
             Component::CurDir => {}
-            Component::ParentDir => {
-                match ret.components().next_back() {
-                    Some(Component::Normal(_)) => {
-                        ret.pop();
-                    }
-                    None | Some(Component::ParentDir) => ret.push(".."),
-                    _ => {}
+            Component::ParentDir => match ret.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    ret.pop();
                 }
-            }
+                None | Some(Component::ParentDir) => ret.push(".."),
+                _ => {}
+            },
             Component::Normal(c) => {
                 ret.push(c);
             }
@@ -2220,20 +2218,11 @@ mod test {
             PathBuf::from("/a/c")
         );
         // Absolute path .. at root is a no-op
-        assert_eq!(
-            normalize_path(Path::new("/../a")),
-            PathBuf::from("/a")
-        );
+        assert_eq!(normalize_path(Path::new("/../a")), PathBuf::from("/a"));
         // Relative path with resolvable ..
-        assert_eq!(
-            normalize_path(Path::new("a/b/../c")),
-            PathBuf::from("a/c")
-        );
+        assert_eq!(normalize_path(Path::new("a/b/../c")), PathBuf::from("a/c"));
         // CurDir components are still removed
-        assert_eq!(
-            normalize_path(Path::new("./a/./b")),
-            PathBuf::from("a/b")
-        );
+        assert_eq!(normalize_path(Path::new("./a/./b")), PathBuf::from("a/b"));
     }
 
     #[test]
